@@ -53,8 +53,26 @@ func newPayload() *payload {
 	return p
 }
 
+// populateTraceTags puts trace tags in the first span until we adapt the new payload format.
+func populateTraceTags(t spanList) {
+	if len(t) == 0 || t[0].context.trace == nil {
+		return
+	}
+	t[0].Lock()
+	defer t[0].Unlock()
+	t[0].context.trace.mu.RLock()
+	defer t[0].context.trace.mu.RUnlock()
+	for k, v := range t[0].context.trace.tags {
+		t[0].Meta[k] = v
+	}
+	for k, v := range t[0].context.trace.propagatedTags {
+		t[0].Meta[k] = v
+	}
+}
+
 // push pushes a new item into the stream.
 func (p *payload) push(t spanList) error {
+	populateTraceTags(t)
 	if err := msgp.Encode(&p.buf, t); err != nil {
 		return err
 	}

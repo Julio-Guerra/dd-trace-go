@@ -141,6 +141,29 @@ func (s *span) SetTag(key string, value interface{}) {
 	s.setMeta(key, fmt.Sprint(value))
 }
 
+// setSamplingPriority locks then span, then updates the sampling priority.
+// It also updates the trace's sampling priority.
+func (s *span) setSamplingPriority(priority, sampler int, rate float64) {
+	s.Lock()
+	defer s.Unlock()
+	s.setSamplingPriorityLocked(priority, sampler, rate)
+}
+
+// setSamplingPriorityLocked updates the sampling priority.
+// It also updates the trace's sampling priority.
+func (s *span) setSamplingPriorityLocked(priority, sampler int, rate float64) {
+	// We don't lock spans when flushing, so we could have a data race when
+	// modifying a span as it's being flushed. This protects us against that
+	// race, since spans are marked `finished` before we flush them.
+	if s.finished {
+		return
+	}
+	s.Metrics[keySamplingPriority] = float64(priority)
+	if sampler != samplerNone {
+		s.context.setSamplingPriority(priority, sampler, rate)
+	}
+}
+
 // setTagError sets the error tag. It accounts for various valid scenarios.
 // This method is not safe for concurrent use.
 func (s *span) setTagError(value interface{}, cfg errorConfig) {
@@ -259,11 +282,15 @@ func (s *span) setTagBool(key string, v bool) {
 		}
 	case ext.ManualDrop:
 		if v {
-			s.setMetric(ext.SamplingPriority, ext.PriorityUserReject)
+			s.setSamplingPriorityLocked(ext.PriorityUserReject, samplerManual, 0)
 		}
 	case ext.ManualKeep:
 		if v {
-			s.setMetric(ext.SamplingPriority, ext.PriorityUserKeep)
+			s.setSamplingPriorityLocked(ext.PriorityUserKeep, samplerManual, 0)
+		}
+	case ext.AppSecKeep:
+		if v {
+			s.setSamplingPriorityLocked(ext.PriorityUserKeep, samplerAppSec, 0)
 		}
 	default:
 		if v {
@@ -284,8 +311,7 @@ func (s *span) setMetric(key string, v float64) {
 	switch key {
 	case ext.SamplingPriority:
 		// setting sampling priority per spec
-		s.Metrics[keySamplingPriority] = v
-		s.context.setSamplingPriority(int(v))
+		s.setSamplingPriorityLocked(int(v), samplerManual, 0)
 	default:
 		s.Metrics[key] = v
 	}

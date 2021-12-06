@@ -83,6 +83,10 @@ const (
 	// belongs to should be dropped when set to true.
 	ManualDrop = "manual.drop"
 
+	// AppSecKeep is a tag used by AppSec. The trace will be kept
+	// when this tag is set to true.
+	AppSecKeep = "appsec.keep"
+
 	// RuntimeID is a tag that contains a unique id for this process.
 	RuntimeID = "runtime-id"
 )

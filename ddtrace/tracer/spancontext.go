@@ -6,6 +6,7 @@
 package tracer
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -91,11 +92,11 @@ func (c *spanContext) ForeachBaggageItem(handler func(k, v string) bool) {
 	}
 }
 
-func (c *spanContext) setSamplingPriority(p int) {
+func (c *spanContext) setSamplingPriority(p int, sampler int, rate float64) {
 	if c.trace == nil {
 		c.trace = newTrace()
 	}
-	c.trace.setSamplingPriority(float64(p))
+	c.trace.setSamplingPriority(c.span.Service, p, sampler, rate)
 }
 
 func (c *spanContext) samplingPriority() (p int, ok bool) {
@@ -144,13 +145,16 @@ const (
 // priority, the root reference and a buffer of the spans which are part of the
 // trace, if these exist.
 type trace struct {
-	mu               sync.RWMutex     // guards below fields
-	spans            []*span          // all the spans that are part of this trace
-	finished         int              // the number of finished spans
-	full             bool             // signifies that the span buffer is full
-	priority         *float64         // sampling priority
-	locked           bool             // specifies if the sampling priority can be altered
-	samplingDecision samplingDecision // samplingDecision indicates whether to send the trace to the agent.
+	mu               sync.RWMutex      // guards below fields
+	spans            []*span           // all the spans that are part of this trace
+	tags             map[string]string // trace level tags
+	propagatedTags   map[string]string // tags propagated between services
+	upstreamServices string            // _dd.p.upstream_services value from the upstream service
+	finished         int               // the number of finished spans
+	full             bool              // signifies that the span buffer is full
+	priority         *float64          // sampling priority
+	locked           bool              // specifies if the sampling priority can be altered
+	samplingDecision samplingDecision  // samplingDecision indicates whether to send the trace to the agent.
 
 	// root specifies the root of the trace, if known; it is nil when a span
 	// context is extracted from a carrier, at which point there are no spans in
@@ -191,10 +195,10 @@ func (t *trace) samplingPriority() (p int, ok bool) {
 	return t.samplingPriorityLocked()
 }
 
-func (t *trace) setSamplingPriority(p float64) {
+func (t *trace) setSamplingPriority(service string, p, sampler int, rate float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.setSamplingPriorityLocked(p)
+	t.setSamplingPriorityLocked(service, p, sampler, rate)
 }
 
 func (t *trace) keep() {
@@ -205,7 +209,7 @@ func (t *trace) drop() {
 	atomic.CompareAndSwapInt64((*int64)(&t.samplingDecision), int64(decisionNone), int64(decisionDrop))
 }
 
-func (t *trace) setSamplingPriorityLocked(p float64) {
+func (t *trace) setSamplingPriorityLocked(service string, p, sampler int, rate float64) {
 	if t.locked {
 		return
 	}
@@ -217,7 +221,13 @@ func (t *trace) setSamplingPriorityLocked(p float64) {
 	if t.priority == nil {
 		t.priority = new(float64)
 	}
-	*t.priority = p
+	*t.priority = float64(p)
+	encodedService := b64Encode(service)
+	if len(t.upstreamServices) > 0 {
+		t.propagatedTags["_dd.p.upstream_services"] = t.upstreamServices + "," + encodedService + "|" + strconv.Itoa(p) + "|" + strconv.Itoa(sampler) + "|" + strconv.FormatFloat(rate, 'f', 4, 64)
+	} else {
+		t.propagatedTags["_dd.p.upstream_services"] = encodedService + "|" + strconv.Itoa(p) + "|" + strconv.Itoa(sampler) + "|" + strconv.FormatFloat(rate, 'f', 4, 64)
+	}
 }
 
 // push pushes a new span into the trace. If the buffer is full, it returns
@@ -240,7 +250,8 @@ func (t *trace) push(sp *span) {
 		return
 	}
 	if v, ok := sp.Metrics[keySamplingPriority]; ok {
-		t.setSamplingPriorityLocked(v)
+		// TODO: this can be removed, it looks it's noop.
+		t.setSamplingPriorityLocked(sp.Service, int(v), samplerNone, 0)
 	}
 	t.spans = append(t.spans, sp)
 	if haveTracer {

@@ -24,6 +24,16 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	samplerNone           = 0
+	samplerAgentRate      = 1
+	samplerRemoteRate     = 2
+	samplerRuleRate       = 3
+	samplerManual         = 4
+	samplerAppSec         = 5
+	samplerRemoteUserRate = 6
+)
+
 // Sampler is the generic interface of any sampler. It must be safe for concurrent use.
 type Sampler interface {
 	// Sample returns true if the given span should be sampled.
@@ -150,9 +160,9 @@ func (ps *prioritySampler) getRate(spn *span) float64 {
 func (ps *prioritySampler) apply(spn *span) {
 	rate := ps.getRate(spn)
 	if sampledByRate(spn.TraceID, rate) {
-		spn.SetTag(ext.SamplingPriority, ext.PriorityAutoKeep)
+		spn.setSamplingPriority(ext.PriorityAutoKeep, samplerAgentRate, rate)
 	} else {
-		spn.SetTag(ext.SamplingPriority, ext.PriorityAutoReject)
+		spn.setSamplingPriority(ext.PriorityAutoReject, samplerAgentRate, rate)
 	}
 	spn.SetTag(keySamplingPriorityRate, rate)
 }
@@ -311,15 +321,15 @@ func (rs *rulesSampler) apply(span *span) bool {
 func (rs *rulesSampler) applyRate(span *span, rate float64, now time.Time) {
 	span.SetTag(keyRulesSamplerAppliedRate, rate)
 	if !sampledByRate(span.TraceID, rate) {
-		span.SetTag(ext.SamplingPriority, ext.PriorityUserReject)
+		span.setSamplingPriority(ext.PriorityUserReject, samplerRuleRate, rate)
 		return
 	}
 
 	sampled, rate := rs.limiter.allowOne(now)
 	if sampled {
-		span.SetTag(ext.SamplingPriority, ext.PriorityUserKeep)
+		span.setSamplingPriority(ext.PriorityUserKeep, samplerRuleRate, rate)
 	} else {
-		span.SetTag(ext.SamplingPriority, ext.PriorityUserReject)
+		span.setSamplingPriority(ext.PriorityUserReject, samplerRuleRate, rate)
 	}
 	span.SetTag(keyRulesSamplerLimiterRate, rate)
 }
